@@ -5,6 +5,8 @@
 ## 一键脚本
 ```
 bash <(curl -fsSL xray-bay.vercel.app)
+bash <(curl -fsSL https://raw.githubusercontent.com/sanbeiicecream/Xray/refs/heads/main/Xray.sh)
+
 ```
 
 ## Xray指令
