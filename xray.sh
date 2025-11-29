@@ -93,7 +93,7 @@ port() {
     echo
 }
 
-# 是否开启 BBR
+# 是否开启 BBR（不检测内核，直接写配置并尝试生效）
 enable_bbr() {
     echo
     read -r -p "是否尝试开启 BBR 拥塞控制？[Y/n]: " answer
@@ -104,7 +104,7 @@ enable_bbr() {
             return
             ;;
         *)
-            echo "开始检测并尝试开启 BBR..."
+            echo "正在尝试开启 BBR..."
             ;;
     esac
 
@@ -114,31 +114,19 @@ enable_bbr() {
         return
     fi
 
-    # 检查内核是否支持 BBR
-    if ! sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr; then
-        echo "当前内核 net.ipv4.tcp_available_congestion_control 不包含 bbr，看来不支持 BBR（已跳过）。"
-        echo "如已升级内核，请重启系统后手动启用 BBR。"
-        echo
-        return
-    fi
-
-    # 写入 BBR 配置
+    # 直接写入 BBR 配置
     cat >/etc/sysctl.d/99-bbr.conf <<EOF
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 EOF
 
-    # 应用配置
-    if sysctl --system >/dev/null 2>&1 || sysctl -p >/dev/null 2>&1; then
-        :
-    fi
+    # 尝试应用配置，不管是否报错都不影响后续流程
+    sysctl --system >/dev/null 2>&1 || sysctl -p >/dev/null 2>&1 || true
 
-    if sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -qw bbr; then
-        echo "BBR 已启用成功。"
-    else
-        echo "已写入 BBR 配置，但未能确认是否启用。"
-        echo "建议重启系统后使用 'sysctl net.ipv4.tcp_congestion_control' 检查。"
-    fi
+    echo "已写入 BBR 配置。"
+    echo "如当前内核不支持 BBR 会自动忽略，可用命令"
+    echo "  sysctl net.ipv4.tcp_congestion_control"
+    echo "查看当前实际生效的拥塞控制算法。"
     echo
 }
 
