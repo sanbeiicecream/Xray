@@ -93,6 +93,55 @@ port() {
     echo
 }
 
+# 是否开启 BBR
+enable_bbr() {
+    echo
+    read -r -p "是否尝试开启 BBR 拥塞控制？[Y/n]: " answer
+    case "${answer:-Y}" in
+        [Nn]*)
+            echo "已选择不开启 BBR。"
+            echo
+            return
+            ;;
+        *)
+            echo "开始检测并尝试开启 BBR..."
+            ;;
+    esac
+
+    if ! command -v sysctl >/dev/null 2>&1; then
+        echo "未找到 sysctl，无法配置 BBR（已跳过）。"
+        echo
+        return
+    fi
+
+    # 检查内核是否支持 BBR
+    if ! sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr; then
+        echo "当前内核 net.ipv4.tcp_available_congestion_control 不包含 bbr，看来不支持 BBR（已跳过）。"
+        echo "如已升级内核，请重启系统后手动启用 BBR。"
+        echo
+        return
+    fi
+
+    # 写入 BBR 配置
+    cat >/etc/sysctl.d/99-bbr.conf <<EOF
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+EOF
+
+    # 应用配置
+    if sysctl --system >/dev/null 2>&1 || sysctl -p >/dev/null 2>&1; then
+        :
+    fi
+
+    if sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -qw bbr; then
+        echo "BBR 已启用成功。"
+    else
+        echo "已写入 BBR 配置，但未能确认是否启用。"
+        echo "建议重启系统后使用 'sysctl net.ipv4.tcp_congestion_control' 检查。"
+    fi
+    echo
+}
+
 # 配置和启动Xray
 xray() {
     echo "开始安装 Xray 内核..."
@@ -245,6 +294,7 @@ main() {
     root
     read_reality_domain
     port
+    enable_bbr
     xray
 }
 
