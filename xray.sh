@@ -1,5 +1,9 @@
 #!/bin/bash
+set -euo pipefail
 
+# 默认伪装域名
+REALITY_DOMAIN_DEFAULT="itunes.apple.com"
+REALITY_DOMAIN="${REALITY_DOMAIN_DEFAULT}"
 
 # 检查root权限并更新系统
 root() {
@@ -10,7 +14,7 @@ root() {
     fi
     
     # 更新系统和安装基础依赖
-    echo "正在更新系统和安装依赖"
+    echo "正在更新系统和安装依赖..."
     if [ -f "/usr/bin/apt-get" ]; then
         apt-get update -y && apt-get upgrade -y
         apt-get install -y gawk curl
@@ -20,26 +24,82 @@ root() {
     fi
 }
 
-# 获取随机端口
-port() {    
-    local port1 port2    
+# 读取伪装域名
+read_reality_domain() {
+    echo
+    read -r -p "请输入伪装域名（直接回车使用默认：${REALITY_DOMAIN_DEFAULT}）： " input_domain
+    if [[ -z "${input_domain}" ]]; then
+        REALITY_DOMAIN="${REALITY_DOMAIN_DEFAULT}"
+    else
+        REALITY_DOMAIN="${input_domain}"
+    fi
+    echo "已选择伪装域名：${REALITY_DOMAIN}"
+    echo
+}
+
+# 获取端口（可自定义，默认随机）
+port() {
+    local port1 port2 input
+
+    # 先生成随机端口作为默认值
     port1=$(shuf -i 1024-65000 -n 1)
     while ss -ltn | grep -q ":$port1"; do
         port1=$(shuf -i 1024-65000 -n 1)
-    done    
+    done
+
     port2=$(shuf -i 1024-65000 -n 1)
     while ss -ltn | grep -q ":$port2" || [ "$port2" -eq "$port1" ]; do
         port2=$(shuf -i 1024-65000 -n 1)
     done
-    
-    PORT1=$port1
-    PORT2=$port2    
+
+    echo "建议的随机端口："
+    echo "  Reality TCP 端口 : ${port1}"
+    echo "  XHTTP 端口       : ${port2}"
+    echo
+
+    # 手动输入 TCP 端口（可回车跳过）
+    read -r -p "请输入 Reality TCP 端口（直接回车使用随机端口 ${port1}）： " input
+    if [[ -n "${input}" ]]; then
+        if ! [[ "${input}" =~ ^[0-9]+$ ]] || (( input < 1 || input > 65535 )); then
+            echo "输入无效，继续使用随机端口 ${port1}"
+        elif ss -ltn | grep -q ":$input"; then
+            echo "端口 ${input} 已被占用，继续使用随机端口 ${port1}"
+        else
+            port1=${input}
+        fi
+    fi
+
+    # 手动输入 XHTTP 端口（可回车跳过）
+    read -r -p "请输入 XHTTP 端口（直接回车使用随机端口 ${port2}）： " input
+    if [[ -n "${input}" ]]; then
+        if ! [[ "${input}" =~ ^[0-9]+$ ]] || (( input < 1 || input > 65535 )); then
+            echo "输入无效，继续使用随机端口 ${port2}"
+        elif [[ "${input}" -eq "${port1}" ]]; then
+            echo "端口 ${input} 与 Reality TCP 端口相同，继续使用随机端口 ${port2}"
+        elif ss -ltn | grep -q ":$input"; then
+            echo "端口 ${input} 已被占用，继续使用随机端口 ${port2}"
+        else
+            port2=${input}
+        fi
+    fi
+
+    PORT1=${port1}
+    PORT2=${port2}
+
+    echo
+    echo "最终使用的端口："
+    echo "  Reality TCP 端口 : ${PORT1}"
+    echo "  XHTTP 端口       : ${PORT2}"
+    echo
 }
 
 # 配置和启动Xray
 xray() {
-    # 安装Xray内核
+    echo "开始安装 Xray 内核..."
+    # 安装Xray内核（使用官方脚本）
     bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+
+    echo "生成配置参数..."
     # 生成所需参数
     path=$(openssl rand -hex 8)
     shid=$(openssl rand -hex 8)
@@ -72,9 +132,9 @@ xray() {
         "network": "tcp",
         "security": "reality",
         "realitySettings": {
-          "target": "www.ua.edu:443",
+          "target": "${REALITY_DOMAIN}:443",
           "serverNames": [
-            "www.ua.edu"
+            "${REALITY_DOMAIN}"
           ],
           "privateKey": "${PrivateKey}",
           "shortIds": [
@@ -99,13 +159,13 @@ xray() {
       "streamSettings": {
         "network": "xhttp",
         "xhttpSettings": {
-            "path": "/${path}"
-        },   
+          "path": "/${path}"
+        },
         "security": "reality",
         "realitySettings": {
-          "target": "www.ua.edu:443",
+          "target": "${REALITY_DOMAIN}:443",
           "serverNames": [
-            "www.ua.edu"
+            "${REALITY_DOMAIN}"
           ],
           "privateKey": "${PrivateKey}",
           "shortIds": [
@@ -136,39 +196,54 @@ xray() {
 }
 EOF
 
-    # 启动Xray服务
-    systemctl enable xray.service && systemctl restart xray.service
+    echo "启动 Xray 服务..."
+    systemctl enable xray.service >/dev/null 2>&1 || true
+    systemctl restart xray.service
+
     if ! systemctl is-active --quiet xray.service; then
-      echo "Xray 启动失败"
-      exit 1
+        echo "Xray 启动失败，请检查日志：journalctl -u xray -xe"
+        exit 1
     fi
-    
+
+    echo "获取服务器 IP 信息..."
     # 获取IP并生成客户端配置
-    HOST_IP=$(curl -s -4 http://www.cloudflare.com/cdn-cgi/trace | grep "ip" | awk -F "[=]" '{print $2}')
+    HOST_IP=$(curl -s -4 https://www.cloudflare.com/cdn-cgi/trace | grep "ip" | awk -F "[=]" '{print $2}' || true)
     if [[ -z "${HOST_IP}" ]]; then
-        HOST_IP=$(curl -s -6 http://www.cloudflare.com/cdn-cgi/trace | grep "ip" | awk -F "[=]" '{print $2}')
+        HOST_IP=$(curl -s -6 https://www.cloudflare.com/cdn-cgi/trace | grep "ip" | awk -F "[=]" '{print $2}' || true)
+    fi
+    if [[ -z "${HOST_IP}" ]]; then
+        HOST_IP="0.0.0.0"
     fi
     
     # 获取IP所在国家
-    IP_COUNTRY=$(curl -s http://ipinfo.io/${HOST_IP}/country)
-    
+    IP_COUNTRY=$(curl -s "https://ipinfo.io/${HOST_IP}/country" || true)
+    if [[ -z "${IP_COUNTRY}" ]]; then
+        IP_COUNTRY="XX"
+    fi
+
     # 生成并保存客户端配置
     cat << EOF > /usr/local/etc/xray/config.txt
 
 vless-tcp-reality
-vless://${uuid}@${HOST_IP}:${PORT1}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.ua.edu&fp=chrome&pbk=${PublicKey}&sid=${shid}&type=tcp&headerType=none#${IP_COUNTRY}
+vless://${uuid}@${HOST_IP}:${PORT1}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_DOMAIN}&fp=chrome&pbk=${PublicKey}&sid=${shid}&type=tcp&headerType=none#${IP_COUNTRY}
 
 vless-xhttp-reality
-vless://${uuid}@${HOST_IP}:${PORT2}?encryption=none&security=reality&sni=www.ua.edu&fp=chrome&pbk=${PublicKey}&sid=${shid}&type=xhttp&path=%2F${path}&mode=auto#${IP_COUNTRY}
+vless://${uuid}@${HOST_IP}:${PORT2}?encryption=none&security=reality&sni=${REALITY_DOMAIN}&fp=chrome&pbk=${PublicKey}&sid=${shid}&type=xhttp&path=%2F${path}&mode=auto#${IP_COUNTRY}
 EOF
 
-    echo "Xray 安装完成"
+    echo
+    echo "Xray 安装完成 ✅"
+    echo "伪装域名：${REALITY_DOMAIN}"
+    echo "配置如下（也已写入 /usr/local/etc/xray/config.txt）："
+    echo "----------------------------------------------------"
     cat /usr/local/etc/xray/config.txt
+    echo "----------------------------------------------------"
 }
 
 # 主函数
 main() {
     root
+    read_reality_domain
     port
     xray
 }
